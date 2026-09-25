@@ -1,0 +1,51 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: enforce-secure-ai-workloads
+  annotations:
+    policies.kyverno.io/title: Enforce Secure AI Inference Workloads
+    policies.kyverno.io/category: AI Security & DevSecOps
+    policies.kyverno.io/severity: High
+    policies.kyverno.io/description: >-
+      Ensures AI model inference pods strictly adhere to Pod Security Standards
+      (Restricted), disallowing root execution, privilege escalation, and unsafe hostPath mounts.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-non-root-and-readonly-fs
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - ai-workloads
+      validate:
+        message: "AI Inference pods must run as non-root with read-only root filesystems and dropped capabilities."
+        pattern:
+          spec:
+            securityContext:
+              runAsNonRoot: true
+            containers:
+              - securityContext:
+                  readOnlyRootFilesystem: true
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                      - ALL
+
+    - name: disallow-host-path-model-mounts
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - ai-workloads
+      validate:
+        message: "HostPath mounts are forbidden in AI workloads to prevent container escape to host node."
+        pattern:
+          spec:
+            =(volumes):
+              - =(hostPath): null

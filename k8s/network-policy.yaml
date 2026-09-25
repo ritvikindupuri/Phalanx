@@ -1,0 +1,56 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: isolate-nano-vllm-workloads
+  namespace: ai-workloads
+spec:
+  podSelector:
+    matchLabels:
+      app: nano-vllm-inference
+  policyTypes:
+    - Ingress
+    - Egress
+
+  # 1. Strict Ingress Control: Accept traffic solely on Port 8080 from Ingress / Gateway
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: api-gateway
+      ports:
+        - protocol: TCP
+          port: 8080
+
+  # 2. Strict Egress Control:
+  # - Allow DNS resolution to CoreDNS
+  # - Explicitly DENY Link-Local Cloud Metadata IP (169.254.169.254) to eliminate SSRF token theft
+  egress:
+    # Allow DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    # Allow HTTPS egress to external model registries while blocking Cloud Metadata (169.254.169.254)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.169.254/32   # Block AWS/GCP/Azure Metadata Services (SSRF defense)
+              - 10.0.0.0/8           # Block internal private cluster subnets
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
