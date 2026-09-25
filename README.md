@@ -130,8 +130,8 @@ Follow these step-by-step instructions with copy-and-paste commands to set up th
 
 ### Step 1: Clone the Repository
 ```bash
-git clone https://github.com/your-username/phalanx.git
-cd phalanx
+git clone https://github.com/ritvikindupuri/Phalanx.git
+cd Phalanx
 ```
 *(If working directly inside the workspace directory `C:\Users\ritvi\.gemini\antigravity\scratch\nano-vllm-engine`, navigate into it directly:)*
 ```bash
