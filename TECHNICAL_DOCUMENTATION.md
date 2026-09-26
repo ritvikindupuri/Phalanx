@@ -57,47 +57,63 @@ The Phalanx platform decouples ingress inspection, token-level request schedulin
 
 ### System Architecture Diagram
 
-```mermaid
-graph TD
-    Client["Client Applications / OpenAI SDK"] --> Ingress["Kubernetes Ingress (TLS Termination)"]
+<p align="center">
+  <img src="assets/phalanx-architecture.png" alt="Phalanx Architecture: Secure LLM Inference with Zero-Trust AI Gateway" width="100%">
+</p>
 
-    subgraph K8sPod["Kubernetes Pod: phalanx-inference (Restricted PSS)"]
-        Ingress --> NetPol["Zero-Trust NetworkPolicy (Blocks SSRF to 169.254.169.254)"]
-        NetPol --> GatewayProxy["Container 1: AI Security Gateway (:8080)"]
+<p align="center"><b>Figure 1: Phalanx Architecture — Secure LLM Inference with Zero-Trust AI Gateway</b></p>
 
-        subgraph GatewayTiers["Ingress Security Pipeline"]
-            GatewayProxy --> Firewall["Prompt Injection & Jailbreak Firewall"]
-            Firewall --> PIIScrub["PII & Secret Redaction Engine"]
-            PIIScrub --> PromExporter["Prometheus Metrics Exporter (:8080/metrics)"]
-        end
+### Detailed Component Breakdown & Request Flow
 
-        PIIScrub -->|TCP Loopback :8000| EngineCore["Container 2: Phalanx Core Engine (:8000)"]
+1. **[1] Client Requests**:
+   - External clients (e.g., client web applications, OpenAI Python/Node SDK clients, curl scripts) initiate inference requests via `POST /v1/chat/completions` targeting port `8080` over HTTP.
+   - Payloads encompass both legitimate prompts and adversarial inputs (jailbreaks, prompt injections, or exposed credential leaks).
+   - Once generation concludes, the client receives the final model response streamed back through the gateway.
 
-        subgraph CoreEngineTiers["High-Throughput LLM Serving Subsystem"]
-            EngineCore --> Scheduler["Continuous Batching Scheduler"]
-            Scheduler --> PrefixTrie["Radix-Tree Prefix Cache (APTC)"]
-            Scheduler --> BlockManager["PagedAttention Virtual Memory Manager"]
-            BlockManager --> PhysicalPool["Physical KV-Cache Tensor Pool (K/V Tensors)"]
-            EngineCore --> QwenModel["Qwen 2.5 (0.5B-Instruct) Neural Weights"]
-            EngineCore --> SpecVerifier["Speculative Decoding Verifier"]
-        end
-    end
+2. **[2] AI Security Gateway (:8080 - FastAPI)**:
+   - Fronts the inference cluster as an inline zero-trust proxy and security firewall.
+   - **Jailbreak Interception**: Runs static regex heuristics and token inspection against adversarial vectors (e.g., DAN jailbreaks, roleplay bypasses, instruction extraction). Adversarial requests are terminated immediately with **`Blocked prompt HTTP 403`**, preventing any compute or KV-cache allocation.
+   - **Secret & PII Redaction**: Sanitizes leaked API keys (AWS credentials, GitHub PATs), RSA private keys, and PII, substituting them with secure redaction tokens.
+   - **Prometheus Telemetry**: Exposes an endpoint at `/metrics` formatted for Prometheus scrapers to track request volume, injection spikes, and scrubbing latencies.
+   - Forwards sanitized, verified requests over the internal loopback network to the Inference API on port `8000`.
 
-    subgraph SupplyChainTiers["Supply-Chain Security & Admission Control"]
-        Registry["Hugging Face Hub / OCI Model Registry"] --> Scanner["Model Binary Security Scanner"]
-        Scanner -->|Validate SafeTensors / Block Pickle| Kyverno["Kyverno Cluster Admission Controller"]
-        Kyverno -->|Admit Verified Workload| K8sPod
-    end
-```
+3. **[3] Inference API (:8000 - FastAPI)**:
+   - Dedicated internal serving microservice fronting the underlying model engine.
+   - Exposes `/v1/chat/completions` for text generation and `/v1/models` for active model metadata.
+   - Publishes real-time `/metrics` in JSON format for internal scheduler telemetry, queue depth, and memory pool status.
+   - Emits streaming token chunks via Server-Sent Events (SSE) back to the gateway.
 
-<p align="center"><b>Figure 1: Phalanx Cloud-Native Multi-Container System Architecture</b></p>
+4. **[4] NanoLLMEngine (PyTorch + Qwen 2.5)**:
+   - The core systems-level LLM execution engine running real model weights (`Qwen/Qwen2.5-0.5B-Instruct` SafeTensors).
+   - **Continuous-Batching Scheduler**: Dynamically schedules tokens at iteration granularity, evicting finished sequences and inserting new prompts into the running batch without latency bubbles.
+   - **Prefix Cache**: Matches and reuses existing block-level KV-cache prefixes across shared system instructions or multi-turn dialogues to avoid redundant prefill passes.
+   - **Block Manager**: Manages virtual memory in fixed-size 16-token physical pages, eliminating internal and external fragmentation and driving physical memory utilization to $96.75\%$.
+   - **Paged K/V Cache**: Stores Key and Value tensors in pre-allocated non-contiguous memory blocks tailored to Grouped-Query Attention ($14\text{ Q-heads} : 2\text{ KV-heads}$).
+   - **Token Generation & Sampling**: Executes the model forward passes and applies temperature/top-p sampling to produce new tokens. The completed response is returned back through the gateway to the client.
 
-### Detailed Component Breakdown
+5. **[5] Model Supply-Chain Scanner (Standalone)**:
+   - Standalone out-of-band security module that scans model artifacts before they enter the runtime path or during CI/CD.
+   - Inspects safe, zero-execution `safetensors` files and legacy PyTorch checkpoints (`.bin`, `.pt`, `.pth`, `.pkl`).
+   - Analyzes binary opcodes and AST trees to block dangerous pickle callables (`os.system`, `subprocess.Popen`, `eval`), neutralizing deserialization remote code execution (RCE) attacks.
 
-* **Ingress & Perimeter Security Layer**: Traffic arriving at the Kubernetes cluster enters through an Ingress controller terminating TLS. Egress and Ingress are constrained by a hardened `NetworkPolicy` that explicitly drops all traffic targeted at the link-local metadata address `169.254.169.254`.
-* **Container 1: AI Security Gateway Sidecar (`gateway/proxy.py`, Port 8080)**: Fronts the inference core. It intercepts incoming `/v1/chat/completions` payloads, evaluates prompt tokens against adversarial jailbreak signatures, sanitizes leaked secrets, records latency metrics in Prometheus format, and proxies clean payloads to `127.0.0.1:8000`.
-* **Container 2: Inference Core (`vllm_core/engine.py`, Port 8000)**: Houses the PyTorch model weights, the PagedAttention memory manager, and the continuous batching scheduler.
-* **Supply-Chain Security Tier (`security/model_scanner.py`)**: Sits outside the runtime path or within CI/CD pipelines to verify binary weight headers before container creation. It blocks legacy un-sandboxed pickles and validates zero-overhead memory-mapped `SafeTensors`.
+6. **[6] Speculative Verifier (Standalone)**:
+   - Standalone out-of-band acceleration and benchmarking module implementing Leviathan et al.'s speculative decoding verification.
+   - Accepts draft model candidate tokens alongside target model probability distributions.
+   - Applies exact rejection sampling to verify draft tokens in parallel forward passes, achieving $2.26\times$ to $3.06\times$ throughput speedup without altering the mathematical target output distribution.
+
+7. **[7] Telemetry & Outcomes**:
+   - Comprehensive observability pipeline aggregating metrics across the runtime stack:
+     - Gateway metrics: Prometheus-formatted counters (`/metrics`) recording total requests, prompt injection blocks, and PII redacting events.
+     - Engine metrics: JSON telemetry reporting active batch size, prefill/decode latencies, free block counts, and memory utilization ($96.75\%$).
+     - Operational outcomes: Streaming model responses for valid requests, and immediate HTTP 403 rejections for blocked adversarial attacks.
+
+8. **[8] Kubernetes Deployment**:
+   - Packages and orchestrates the production workload with cloud-native resilience:
+     - **Deployment**: Configured with 2 replicas, running 2 co-located containers per pod (the AI Security Gateway container on port 8080 and the Inference Engine container on port 8000).
+     - **Horizontal Pod Autoscaling (HPA)**: Dynamically scales from 2 to 10 replicas targeting 75% CPU and 80% memory utilization.
+     - **Zero-Trust NetworkPolicy**: Hardens pod networking by explicitly dropping egress to Link-Local Cloud Metadata (`169.254.169.254`) and restricted private CIDRs, completely preventing SSRF and cloud IAM credential theft.
+     - **Kyverno Admission Controller**: Enforces Kubernetes Restricted Pod Security Standards (`runAsNonRoot: true`, `readOnlyRootFilesystem: true`, `drop: [ALL]` capabilities).
+   - *Architecture Note*: The Model Supply-Chain Scanner and Speculative Verifier are implemented as standalone modules, decoupled from the live Gateway $\to$ Engine request path.
 
 ---
 
