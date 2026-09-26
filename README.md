@@ -1,20 +1,12 @@
 # Phalanx - Fast, Secure LLM Inference
 
-[![Kubernetes](https://img.shields.io/badge/Kubernetes-1.28+-326ce5.svg?logo=kubernetes&logoColor=white)](https://kubernetes.io/)
-[![Kyverno](https://img.shields.io/badge/Policy-Kyverno-008080.svg)](https://kyverno.io/)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
-[![HuggingFace](https://img.shields.io/badge/HuggingFace-Qwen%202.5-ffd21e.svg)](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct)
-[![Security: Hardened](https://img.shields.io/badge/Security-PSS%20Restricted-brightgreen.svg)]()
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-
 An enterprise-grade, cloud-native Large Language Model (LLM) serving platform that bridges the gap between deep systems-level LLM performance engineering and defense-in-depth AI DevSecOps. Phalanx pairs a custom high-throughput PyTorch inference engine featuring PagedAttention virtual memory management, Grouped-Query Attention (GQA), iteration-level continuous batching, and speculative decoding with an inline Zero-Trust AI security gateway and hardened Kubernetes orchestration.
 
-> 📖 **Deep Technical Architecture & Benchmark Report**: For the comprehensive design document with architectural proofs, mathematical analyses, agent lifecycles, and empirical telemetry, see [TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md).
+> **Deep Technical Architecture & Benchmark Report**: For the comprehensive design document with architectural proofs, mathematical analyses, agent lifecycles, and empirical telemetry, see [TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md).
 
 ---
 
-## ⚡ Key Features
+## Key Features
 
 * **PagedAttention Virtual Memory Management**: Partitions Key-Value (KV) cache tensors into fixed-size physical memory pages (16 tokens/block), eliminating internal and external memory fragmentation and driving physical memory utilization to **96.75%** (a **96.8% reduction** in fragmentation waste).
 * **Native Grouped-Query Attention (GQA) with Qwen 2.5**: Optimized support for asymmetric head architectures ($14\text{ Query heads} : 2\text{ Key/Value heads}$ with head dimension $64$) running real Hugging Face model weights (`Qwen/Qwen2.5-0.5B-Instruct` SafeTensors), delivering a $7\times$ memory reduction compared to Multi-Head Attention.
@@ -28,7 +20,7 @@ An enterprise-grade, cloud-native Large Language Model (LLM) serving platform th
 
 ---
 
-## 🏛️ System Architecture
+## System Architecture
 
 Phalanx decouples untrusted ingress traffic, inline security inspection, agentic scheduling, and low-level physical tensor allocation into distinct, secure boundaries.
 
@@ -105,7 +97,7 @@ graph TD
 
 ---
 
-## 💻 Tech Stack
+## Tech Stack
 
 | Domain | Technologies / Libraries | Purpose |
 | :--- | :--- | :--- |
@@ -119,7 +111,7 @@ graph TD
 
 ---
 
-## 🛠️ Detailed Setup Instructions
+## Detailed Setup Instructions
 
 Follow these step-by-step instructions with copy-and-paste commands to set up the environment and download dependencies.
 
@@ -168,7 +160,7 @@ python -c "import torch, transformers, fastapi; print(f'PyTorch: {torch.__versio
 
 ---
 
-## 📖 How to Use the App: Step-by-Step Guide
+## How to Use the App: Step-by-Step Guide
 
 Every feature in Phalanx is executable and testable directly from the command line. Follow these concrete steps to explore every tier of the platform.
 
@@ -317,7 +309,7 @@ kubectl describe networkpolicy phalanx-netpol
 
 ---
 
-## 🔬 Benchmark Comparison Overview
+## Benchmark Comparison Overview
 
 | Metric | Static Allocation (Standard) | Phalanx (PagedAttention) | Improvement |
 | :--- | :--- | :--- | :--- |
@@ -330,7 +322,7 @@ kubectl describe networkpolicy phalanx-netpol
 
 ---
 
-## 📚 Technical Documentation Link
+## Technical Documentation Link
 
 For the complete, in-depth architectural and mathematical specification, including:
 * Step-by-step mathematical proof of PagedAttention virtual address translation
@@ -339,11 +331,11 @@ For the complete, in-depth architectural and mathematical specification, includi
 * Agentic scheduling state transitions and lifecycle flow diagrams
 * Complete Kubernetes YAML definitions for Pod Security Standards and Kyverno policies
 
-👉 **Read the full [TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md)**.
+**Read the full [TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md)**.
 
 ---
 
-## 📄 License & Attribution
+## License & Attribution
 
 Designed and engineered by **Ritvik Indupuri** (September 2026).  
 Released under the **MIT License**.
