@@ -13,8 +13,8 @@ import time
 import json
 import uuid
 import asyncio
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel, Field
 
 from vllm_core.engine import NanoLLMEngine
@@ -67,21 +67,48 @@ def list_models():
 
 
 @app.get("/metrics")
-def get_metrics():
+def get_metrics(request: Request):
     if not engine:
         raise HTTPException(status_code=503, detail="Engine initializing")
     mem_stats = engine.block_manager.get_memory_stats()
     prefix_stats = engine.prefix_cache.get_stats()
-    return {
-        "kv_cache_utilization_pct": mem_stats["utilization_pct"],
-        "kv_used_blocks": mem_stats["used_blocks"],
-        "kv_total_blocks": mem_stats["total_blocks"],
-        "active_concurrent_sequences": mem_stats["active_sequences"],
-        "tokens_stored_in_cache": mem_stats["tokens_stored"],
-        "prefix_cache_hit_rate_pct": prefix_stats["hit_rate_pct"],
-        "scheduler_total_completed": engine.scheduler.total_completed_requests,
-        "scheduler_total_preemptions": engine.scheduler.total_preemptions
-    }
+    
+    if "application/json" in request.headers.get("accept", ""):
+        return {
+            "kv_cache_utilization_pct": mem_stats["utilization_pct"],
+            "kv_used_blocks": mem_stats["used_blocks"],
+            "kv_total_blocks": mem_stats["total_blocks"],
+            "active_concurrent_sequences": mem_stats["active_sequences"],
+            "tokens_stored_in_cache": mem_stats["tokens_stored"],
+            "prefix_cache_hit_rate_pct": prefix_stats["hit_rate_pct"],
+            "scheduler_total_completed": engine.scheduler.total_completed_requests,
+            "scheduler_total_preemptions": engine.scheduler.total_preemptions
+        }
+    
+    lines = [
+        "# HELP phalanx_engine_kv_utilization_pct Memory utilization percentage of the PagedAttention pool",
+        "# TYPE phalanx_engine_kv_utilization_pct gauge",
+        f"phalanx_engine_kv_utilization_pct {mem_stats['utilization_pct']}",
+        "# HELP phalanx_engine_kv_used_blocks Number of active allocated physical blocks",
+        "# TYPE phalanx_engine_kv_used_blocks gauge",
+        f"phalanx_engine_kv_used_blocks {mem_stats['used_blocks']}",
+        "# HELP phalanx_engine_kv_total_blocks Total capacity of physical blocks",
+        "# TYPE phalanx_engine_kv_total_blocks gauge",
+        f"phalanx_engine_kv_total_blocks {mem_stats['total_blocks']}",
+        "# HELP phalanx_engine_active_sequences Current concurrent sequences decoding",
+        "# TYPE phalanx_engine_active_sequences gauge",
+        f"phalanx_engine_active_sequences {mem_stats['active_sequences']}",
+        "# HELP phalanx_engine_prefix_cache_hit_rate_pct Radix-Tree prefix cache hit percentage",
+        "# TYPE phalanx_engine_prefix_cache_hit_rate_pct gauge",
+        f"phalanx_engine_prefix_cache_hit_rate_pct {prefix_stats['hit_rate_pct']}",
+        "# HELP phalanx_engine_completed_requests_total Total successfully completed generation requests",
+        "# TYPE phalanx_engine_completed_requests_total counter",
+        f"phalanx_engine_completed_requests_total {engine.scheduler.total_completed_requests}",
+        "# HELP phalanx_engine_preemptions_total Total requests preempted due to KV memory saturation",
+        "# TYPE phalanx_engine_preemptions_total counter",
+        f"phalanx_engine_preemptions_total {engine.scheduler.total_preemptions}",
+    ]
+    return Response(content="\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
 
 @app.post("/v1/chat/completions")
@@ -157,3 +184,13 @@ async def chat_completions(request: ChatCompletionRequest):
             "total_latency_ms": round(req.total_latency_ms, 2) if req.total_latency_ms else None
         }
     }
+
+
+if __name__ == "__main__":
+    import uvicorn
+    import argparse
+    parser = argparse.ArgumentParser(description="Phalanx Inference Core Engine")
+    parser.add_argument("--port", type=int, default=8000, help="Engine listening port")
+    args = parser.parse_args()
+    print(f"[*] Starting Phalanx Inference Engine on port {args.port}...")
+    uvicorn.run(app, host="0.0.0.0", port=args.port)

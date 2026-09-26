@@ -41,6 +41,9 @@ ENV/
 *.h5
 hf_cache/
 models/
+prometheus_bin/
+prom_data/
+data/
 
 # Unit test & coverage caches
 .pytest_cache/

@@ -5,9 +5,11 @@ Validates prompts, blocks prompt injections, sanitizes PII/secrets,
 and exports security metrics to Prometheus.
 """
 
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 import time
+import argparse
 import httpx
+import uvicorn
 from fastapi import FastAPI, Request, HTTPException, status
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
@@ -33,8 +35,17 @@ class ChatMessage(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    model: str = "gpt2"
+    model: str = "Qwen/Qwen2.5-0.5B-Instruct"
     messages: List[ChatMessage]
+    max_tokens: int = Field(default=32, ge=1, le=512)
+    temperature: float = 0.7
+    top_p: float = 0.9
+    stream: bool = False
+
+
+class CompletionRequest(BaseModel):
+    model: str = "Qwen/Qwen2.5-0.5B-Instruct"
+    prompt: str
     max_tokens: int = Field(default=32, ge=1, le=512)
     temperature: float = 0.7
     top_p: float = 0.9
@@ -93,7 +104,6 @@ async def secure_chat_completions(req: ChatRequest):
     # 3. Sanitize PII/secrets in messages before forwarding
     if guardrail_result.violations:
         METRICS["pii_sanitized"] += len(guardrail_result.violations)
-        # Update user messages with sanitized text
         for m in req.messages:
             eval_single = evaluate_prompt_safety(m.content, mask_secrets=True)
             m.content = eval_single.sanitized_text
@@ -110,6 +120,73 @@ async def secure_chat_completions(req: ChatRequest):
             return JSONResponse(status_code=resp.status_code, content=resp.json())
         except httpx.ConnectError:
             raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                status_code=status.HTTP_533_SERVICE_UNAVAILABLE if hasattr(status, 'HTTP_533_SERVICE_UNAVAILABLE') else 503,
                 detail="Inference engine backend unreachable"
             )
+
+
+@app.post("/v1/completions")
+async def secure_completions(req: CompletionRequest):
+    METRICS["total_requests"] += 1
+
+    guardrail_result = evaluate_prompt_safety(req.prompt, mask_secrets=True)
+
+    if not guardrail_result.is_allowed:
+        METRICS["injections_blocked"] += 1
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={
+                "error": {
+                    "type": "security_policy_violation",
+                    "code": "PROMPT_INJECTION_DETECTED",
+                    "message": "Request blocked by AI Security Gateway firewall.",
+                    "details": guardrail_result.violations
+                }
+            }
+        )
+
+    if guardrail_result.violations:
+        METRICS["pii_sanitized"] += len(guardrail_result.violations)
+        req.prompt = guardrail_result.sanitized_text
+
+    METRICS["forwarded_to_inference"] += 1
+
+    # Proxy to upstream engine
+    chat_payload = {
+        "model": req.model,
+        "messages": [{"role": "user", "content": req.prompt}],
+        "max_tokens": req.max_tokens,
+        "temperature": req.temperature,
+        "top_p": req.top_p,
+        "stream": req.stream
+    }
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            resp = await client.post(
+                f"{UPSTREAM_ENGINE_URL}/v1/chat/completions",
+                json=chat_payload
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                text = ""
+                if "choices" in data and len(data["choices"]) > 0:
+                    text = data["choices"][0].get("message", {}).get("content", "")
+                return JSONResponse(status_code=200, content={"text": text, "raw": data})
+            return JSONResponse(status_code=resp.status_code, content=resp.json())
+        except httpx.ConnectError:
+            raise HTTPException(
+                status_code=503,
+                detail="Inference engine backend unreachable"
+            )
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Zero-Trust AI Security Gateway")
+    parser.add_argument("--port", type=int, default=8080, help="Gateway listening port")
+    parser.add_argument("--engine-url", type=str, default="http://localhost:8000", help="Upstream inference core URL")
+    args = parser.parse_args()
+
+    UPSTREAM_ENGINE_URL = args.engine_url
+    print(f"[*] Starting AI Security Gateway on port {args.port} -> Upstream: {UPSTREAM_ENGINE_URL}")
+    uvicorn.run(app, host="0.0.0.0", port=args.port)
